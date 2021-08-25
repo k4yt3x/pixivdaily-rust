@@ -12,6 +12,7 @@ use teloxide::{
 };
 use tokio::{spawn, task::JoinHandle};
 
+const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
 
 #[derive(Debug, Deserialize)]
@@ -74,19 +75,32 @@ struct RankingIllust {
 /// configs passed to the run function
 pub struct Config {
     logger: slog::Logger,
+    token: String,
     chat_id: i64,
 }
 
 impl Config {
-    pub fn new(logger: slog::Logger, chat_id: i64) -> Option<Config> {
-        Some(Config {
+    pub fn new(logger: slog::Logger, token: String, chat_id: i64) -> Config {
+        Config {
             logger,
+            token,
             chat_id,
-        })
+        }
     }
 }
 
-async fn get_pixiv_daily_ranking() -> Result<Vec<RankingIllust>, Box<dyn Error>> {
+/// retrieve and deserialize pixiv daily rankings
+///
+/// # Errors
+///
+/// reqwest errors
+///
+/// # Examples
+///
+/// ```
+/// let contents = get_pixiv_daily_ranking().await?;
+/// ```
+async fn get_pixiv_daily_ranking() -> Result<Vec<RankingIllust>, reqwest::Error> {
     Ok(
         reqwest::get("https://www.pixiv.net/ranking.php?mode=daily&format=json")
             .await?
@@ -96,6 +110,21 @@ async fn get_pixiv_daily_ranking() -> Result<Vec<RankingIllust>, Box<dyn Error>>
     )
 }
 
+/// get detailed information about a specific illustration
+///
+/// # Arguments
+///
+/// * `id` - illust ID
+///
+/// # Errors
+///
+/// reqwest errors
+///
+/// # Examples
+///
+/// ```
+/// let illust_details = get_illust_details("87469406").await?;
+/// ```
 async fn get_illust_details(id: String) -> Result<Illust, reqwest::Error> {
     let illust_response = reqwest::get(format!(
         "https://www.pixiv.net/touch/ajax/illust/details?illust_id={}",
@@ -108,6 +137,23 @@ async fn get_illust_details(id: String) -> Result<Illust, reqwest::Error> {
     Ok(illust_response.body.illust_details)
 }
 
+/// download an image into memory into Vec<u8>
+///
+/// # Arguments
+///
+/// * `url` - URL of the image
+/// * `referer` - Referer header to set
+///
+/// # Errors
+///
+/// reqwest errors
+///
+/// # Examples
+///
+/// ```
+/// let image_bytes = download_image(&"https://example.com/example.png",
+/// &"https://example.com").await?
+/// ```
 async fn download_image(url: &String, referer: &String) -> Result<Vec<u8>, reqwest::Error> {
     Ok(reqwest::Client::new()
         .get(url)
@@ -119,6 +165,20 @@ async fn download_image(url: &String, referer: &String) -> Result<Vec<u8>, reqwe
         .to_vec())
 }
 
+/// resize an image into a size/dimension acceptable by
+/// Telegram's API
+///
+/// # Arguments
+///
+/// * `config` - an instance of Config
+/// * `image_bytes` - raw input image bytes
+/// * `id` - illustration ID
+/// * `original_width` - original image width
+/// * `original_height` - original image height
+///
+/// # Errors
+///
+/// image::ImageError
 async fn resize_image(
     config: &Config,
     image_bytes: Vec<u8>,
@@ -126,13 +186,6 @@ async fn resize_image(
     original_width: u32,
     original_height: u32,
 ) -> Result<Vec<u8>, ImageError> {
-    debug!(
-        config.logger,
-        "id={},size={}",
-        id,
-        image_bytes.len() as f32 / 1024_f32.powf(2.0)
-    );
-
     // if image is already small enough, return original image
     if image_bytes.len() <= MAX_IMAGE_SIZE {
         return Ok(image_bytes);
@@ -146,7 +199,7 @@ async fn resize_image(
     let mut target_height = (original_height as f32 * guessed_ratio) as u32;
     debug!(
         config.logger,
-        "Resizing parameters: r={},w={},h={}", guessed_ratio, target_width, target_height
+        "Resizing parameters: r={} w={} h={}", guessed_ratio, target_width, target_height
     );
 
     // Telegram API requires width + height <= 10000
@@ -156,7 +209,7 @@ async fn resize_image(
         target_height = (target_height as f32 * target_ratio).floor() as u32;
         debug!(
             config.logger,
-            "Additional resizing parameters: r={},w={},h={}",
+            "Additional resizing parameters: r={} w={} h={}",
             target_ratio,
             target_width,
             target_height
@@ -178,7 +231,7 @@ async fn resize_image(
         if png_bytes.len() < MAX_IMAGE_SIZE {
             info!(
                 config.logger,
-                "Final size: {} MiB",
+                "Final size: size={}MiB",
                 png_bytes.len() as f32 / 1024_f32.powf(2.0)
             );
             return Ok(png_bytes);
@@ -187,7 +240,7 @@ async fn resize_image(
         // shrink image by another 20% if the previous round is not enough
         debug!(
             config.logger,
-            "Image too large ({} MiB); additional resizing required",
+            "Image too large: size={}MiB; additional resizing required",
             png_bytes.len() as f32 / 1024_f32.powf(2.0)
         );
         target_width = (target_width as f32 * 0.8) as u32;
@@ -195,6 +248,19 @@ async fn resize_image(
     }
 }
 
+/// escape characters according to Telegram API's
+/// MarkdownV2 specification
+///
+/// # Arguments
+///
+/// * `text` - text to escape
+///
+/// # Examples
+///
+/// ```
+/// let escaped = markdown_escape("This. Is. Sparta!");
+/// assert_eq!(escaped, "This\\. Is\\. Sparta\\!".to_owned());
+/// ```
 fn markdown_escape(text: &String) -> String {
     text.replace("_", "\\_")
         .replace("*", "\\*")
@@ -216,6 +282,18 @@ fn markdown_escape(text: &String) -> String {
         .replace("!", "\\!")
 }
 
+/// send an illustration to the Telegram chat
+///
+/// # Arguments
+///
+/// * `config` - an instance of Config
+/// * `bot` - an instance of AutoSend<Bot>
+/// * `illust` - an Illust struct which represents an illustration
+/// * `silent` - send the image silently without notifications
+///
+/// # Errors
+///
+/// any error that implements the Error trait
 async fn send_illust(
     config: &Config,
     bot: &AutoSend<Bot>,
@@ -281,19 +359,38 @@ async fn send_illust(
     Ok(())
 }
 
+/// entry point for the functional part of this program
+///
+/// # Arguments
+///
+/// * `config` - an instance of Config
+///
+/// # Errors
+///
+/// any error that implements the Error trait
 pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    let bot = Bot::from_env().auto_send();
+    // initialize bot instance
+    info!(
+        config.logger,
+        "PixivDaily bot {version} initializing",
+        version = VERSION
+    );
+    let bot = Bot::new(&config.token).auto_send();
     let mut first_message = true;
 
+    // fetch daily top 50
+    info!(config.logger, "Fetching today's top 50 illustrations");
     let mut tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
 
     for illust in get_pixiv_daily_ranking().await? {
         tasks.push(spawn(get_illust_details(illust.illust_id.to_string())));
     }
 
+    // send each of the illustrations
     for task in join_all(tasks).await {
         let illust = task??;
 
+        // try up to three times before giving up
         for attempt in 0..3 {
             match send_illust(&config, &bot, &illust, !first_message).await {
                 Ok(_) => {
@@ -301,19 +398,10 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     break;
                 }
                 Err(e) => {
-                    error!(
-                        config.logger,
-                        "id={},attempt={}: {}", &illust.id, attempt, e
-                    );
+                    error!(config.logger, "id={} attempt={} {}", &illust.id, attempt, e);
                 }
             }
         }
-
-        /*
-        send_illust(&config, &bot, &illust, !first_message)
-            .await
-            .unwrap_or_else(|error| error!(config.logger, "id={}: {}", &illust.id, error))
-        */
     }
 
     Ok(())
