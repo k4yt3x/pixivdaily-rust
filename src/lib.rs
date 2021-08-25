@@ -4,7 +4,7 @@ use futures::future::join_all;
 use image::{imageops::FilterType::Lanczos3, load_from_memory, ImageError, ImageFormat::Png};
 use reqwest::header::REFERER;
 use serde::Deserialize;
-use slog::{crit, debug, error, info, trace, warn};
+use slog::{debug, error, info};
 use teloxide::{
     payloads::SendPhotoSetters,
     prelude::*,
@@ -301,10 +301,19 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     break;
                 }
                 Err(e) => {
-                    error!(config.logger, "Error occured id={},attempt={}", e, attempt);
+                    error!(
+                        config.logger,
+                        "id={},attempt={}: {}", &illust.id, attempt, e
+                    );
                 }
             }
         }
+
+        /*
+        send_illust(&config, &bot, &illust, !first_message)
+            .await
+            .unwrap_or_else(|error| error!(config.logger, "id={}: {}", &illust.id, error))
+        */
     }
 
     Ok(())

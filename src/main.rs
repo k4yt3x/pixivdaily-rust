@@ -48,7 +48,7 @@ async fn main() {
             Err(e) => {
                 eprintln!("Error: {}", e);
                 1
-            },
+            }
         })
     }
     else {
