@@ -1,0 +1,35 @@
+cargo-features = ["strip"]
+
+[package]
+authors = ["i@k4yt3x.com"]
+categories = ["command-line-utilities"]
+description = "Source code for the Telegram channel @pixivdaily"
+edition = "2018"
+homepage = "https://github.com/k4yt3x/pixivdaily-rust"
+keywords = ["pixiv", "telegram"]
+license = "GPL-2.0-only"
+name = "pixivdaily"
+readme = "README.md"
+repository = "https://github.com/k4yt3x/pixivdaily-rust"
+version = "1.0.0"
+
+[[bin]]
+name = "pixivdaily"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+strip = "symbols"
+
+[dependencies]
+clap = "2.33"
+futures = "0.3"
+image = "0.23"
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+slog = "2.7"
+slog-term = "2.8"
+teloxide = { version = "0.5", features = ["auto-send", "macros"] }
+tokio = { version = "1.10", features = ["full"] }
