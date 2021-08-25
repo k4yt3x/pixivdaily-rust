@@ -1,0 +1,14 @@
+[Unit]
+Description=Telegram PixivDaily channel bot
+Wants=pixivdaily.timer
+
+[Service]
+Type=oneshot
+User=nobody
+Group=nogroup
+WorkingDirectory=/tmp
+EnvironmentFile=/etc/pixivdaily.conf
+ExecStart=/usr/local/bin/pixivdaily
+
+[Install]
+WantedBy=multi-user.target
