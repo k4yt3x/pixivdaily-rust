@@ -390,16 +390,13 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     for task in join_all(tasks).await {
         let illust = task??;
 
-        // try up to three times before giving up
-        for attempt in 0..3 {
-            match send_illust(&config, &bot, &illust, !first_message).await {
-                Ok(_) => {
-                    first_message = false;
-                    break;
-                }
-                Err(e) => {
-                    error!(config.logger, "id={} attempt={} {}", &illust.id, attempt, e);
-                }
+        // send the illustration
+        match send_illust(&config, &bot, &illust, !first_message).await {
+            Ok(_) => {
+                first_message = false;
+            }
+            Err(e) => {
+                error!(config.logger, "id={} {}", &illust.id, e);
             }
         }
     }

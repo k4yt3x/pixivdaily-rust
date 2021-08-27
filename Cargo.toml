@@ -11,7 +11,7 @@ license = "GPL-2.0-only"
 name = "pixivdaily"
 readme = "README.md"
 repository = "https://github.com/k4yt3x/pixivdaily-rust"
-version = "1.0.0"
+version = "1.0.1"
 
 [[bin]]
 name = "pixivdaily"
