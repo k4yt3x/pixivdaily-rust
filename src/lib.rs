@@ -290,7 +290,6 @@ fn markdown_escape(text: &String) -> String {
 /// * `config` - an instance of Config
 /// * `bot` - an instance of AutoSend<Bot>
 /// * `illust` - an Illust struct which represents an illustration
-/// * `silent` - send the image silently without notifications
 ///
 /// # Errors
 ///
@@ -299,7 +298,6 @@ async fn send_illust(
     config: &Config,
     bot: &AutoSend<Bot>,
     illust: &Illust,
-    silent: bool,
 ) -> Result<(), Box<dyn Error>> {
     info!(config.logger, "Retrieving image id={}", illust.id);
     let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
@@ -354,7 +352,7 @@ async fn send_illust(
     bot.send_photo(config.chat_id, image)
         .parse_mode(MarkdownV2)
         .caption(captions.join("\n"))
-        .disable_notification(silent)
+        .disable_notification(true)
         .await?;
 
     Ok(())
@@ -377,7 +375,6 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         version = VERSION
     );
     let bot = Bot::new(&config.token).auto_send();
-    let mut first_message = true;
 
     // fetch daily top 50
     info!(config.logger, "Fetching today's top 50 illustrations");
@@ -402,13 +399,8 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         let illust = task??;
 
         // send the illustration
-        match send_illust(&config, &bot, &illust, !first_message).await {
-            Ok(_) => {
-                first_message = false;
-            }
-            Err(e) => {
-                error!(config.logger, "id={} {}", &illust.id, e);
-            }
+        if let Err(error) = send_illust(&config, &bot, &illust).await {
+            error!(config.logger, "id={} {}", &illust.id, error);
         }
     }
 
