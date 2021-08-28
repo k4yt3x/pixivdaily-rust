@@ -7,7 +7,7 @@ use reqwest::header::REFERER;
 use serde::Deserialize;
 use slog::{debug, error, info};
 use teloxide::{
-    payloads::SendPhotoSetters,
+    payloads::{PinChatMessageSetters, SendPhotoSetters},
     prelude::*,
     types::{InputFile, ParseMode::MarkdownV2},
 };
@@ -375,9 +375,10 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         version = VERSION
     );
     let bot = Bot::new(&config.token).auto_send();
+    let today = Utc::today().format("%B %-d, %Y").to_string();
 
     // fetch daily top 50
-    info!(config.logger, "Fetching today's top 50 illustrations");
+    info!(config.logger, "Fetching top 50 illustrations ({})", today);
     let mut tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
 
     for illust in get_pixiv_daily_ranking().await? {
@@ -385,13 +386,9 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
 
     // send today's date and pin the message
-    let date_message = bot
-        .send_message(
-            config.chat_id,
-            Utc::today().format("%B %-d, %Y").to_string(),
-        )
-        .await?;
+    let date_message = bot.send_message(config.chat_id, today).await?;
     bot.pin_chat_message(config.chat_id, date_message.id)
+        .disable_notification(true)
         .await?;
 
     // send each of the illustrations
