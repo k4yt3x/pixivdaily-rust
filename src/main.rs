@@ -1,7 +1,7 @@
 use std::{env, error::Error, process, sync::Mutex};
 
 use clap::{value_t_or_exit, Arg};
-use pixivdaily::{run, Config};
+use pixivdaily::{run, Config, VERSION};
 use slog::{o, Drain};
 
 /// parse the command line arguments and return a new
@@ -19,7 +19,7 @@ use slog::{o, Drain};
 fn parse() -> Result<Config, Box<dyn Error>> {
     // parse command line arguments
     let matches = clap::App::new("pixivdaily")
-        .version("1.0.0")
+        .version(VERSION)
         .author("K4YT3X <i@k4yt3x.com>")
         .about("Source code for the Telegram channel @pixiv_daily")
         .arg(

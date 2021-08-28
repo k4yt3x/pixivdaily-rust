@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use chrono::Utc;
 use futures::future::join_all;
 use image::{imageops::FilterType::Lanczos3, load_from_memory, ImageError, ImageFormat::Png};
 use reqwest::header::REFERER;
@@ -12,7 +13,7 @@ use teloxide::{
 };
 use tokio::{spawn, task::JoinHandle};
 
-const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +386,16 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     for illust in get_pixiv_daily_ranking().await? {
         tasks.push(spawn(get_illust_details(illust.illust_id.to_string())));
     }
+
+    // send today's date and pin the message
+    let date_message = bot
+        .send_message(
+            config.chat_id,
+            Utc::today().format("%B %-d, %Y").to_string(),
+        )
+        .await?;
+    bot.pin_chat_message(config.chat_id, date_message.id)
+        .await?;
 
     // send each of the illustrations
     for task in join_all(tasks).await {

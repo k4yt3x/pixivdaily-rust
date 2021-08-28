@@ -11,7 +11,7 @@ license = "GPL-2.0-only"
 name = "pixivdaily"
 readme = "README.md"
 repository = "https://github.com/k4yt3x/pixivdaily-rust"
-version = "1.0.1"
+version = "1.1.0"
 
 [[bin]]
 name = "pixivdaily"
@@ -24,6 +24,7 @@ opt-level = 3
 strip = "symbols"
 
 [dependencies]
+chrono = "0.4"
 clap = "2.33"
 futures = "0.3"
 image = "0.23"
