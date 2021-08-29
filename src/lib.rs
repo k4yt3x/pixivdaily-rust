@@ -373,14 +373,15 @@ async fn send_illust<'a>(
 
     // retry up to 5 times if the API rate limit has been exceeded
     for _ in 0..5 {
-        // catch and downcast only if the error is RetryAfter
-        if let Err(RequestError::RetryAfter(seconds)) = bot
+        let result = bot
             .send_photo(config.chat_id, image.clone())
             .parse_mode(MarkdownV2)
             .caption(captions.join("\n"))
             .disable_notification(true)
-            .await
-        {
+            .await;
+
+        // catch and downcast only if the error is RetryAfter
+        if let Err(RequestError::RetryAfter(seconds)) = result {
             warn!(config.logger, "Got retry after {} seconds", seconds);
             sleep_seconds = send_sleep.load(Ordering::SeqCst);
 
@@ -414,7 +415,10 @@ async fn send_illust<'a>(
                 thread::sleep(Duration::from_secs(sleep_seconds as u64));
             }
         }
+        // break out of the loop if the send operation has succeeded
+        // or if the error cannot be handled
         else {
+            result?;
             break;
         }
     }
