@@ -371,8 +371,9 @@ async fn send_illust<'a>(
         thread::sleep(Duration::from_secs(sleep_seconds as u64));
     }
 
-    // retry up to 10 times if the API rate limit has been exceeded
+    // retry up to 5 times if the API rate limit has been exceeded
     for _ in 0..5 {
+        // catch and downcast only if the error is RetryAfter
         if let Err(RequestError::RetryAfter(seconds)) = bot
             .send_photo(config.chat_id, image.clone())
             .parse_mode(MarkdownV2)
@@ -380,19 +381,31 @@ async fn send_illust<'a>(
             .disable_notification(true)
             .await
         {
+            warn!(config.logger, "Got retry after {} seconds", seconds);
             sleep_seconds = send_sleep.load(Ordering::SeqCst);
 
+            // if the timer is not already set
             if sleep_seconds == 0 {
+                // set global sleep timer
                 warn!(
                     config.logger,
                     "Hit rate limit: issuing a sleep timer for {} seconds", seconds
                 );
                 send_sleep.store(seconds as u32, Ordering::SeqCst);
-                for _ in 0..seconds {
+
+                // keep decrementing the timer so "threads" that join
+                // late will get the correct remainig time
+                while send_sleep.load(Ordering::SeqCst) > 0 {
                     thread::sleep(Duration::from_secs(1));
-                    send_sleep.store(send_sleep.load(Ordering::SeqCst) - 1, Ordering::SeqCst);
+                    send_sleep.fetch_sub(1, Ordering::SeqCst);
+                    warn!(
+                        config.logger,
+                        "Sleep timer decayed to {} seconds",
+                        send_sleep.load(Ordering::SeqCst)
+                    );
                 }
             }
+            // if the timer is already set, obey
             else {
                 warn!(
                     config.logger,
