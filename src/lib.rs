@@ -363,7 +363,7 @@ async fn send_illust<'a>(
     info!(config.logger, "Sending illustration id={}", illust.id);
 
     // test if a sleep timer is set
-    let mut sleep_seconds = send_sleep.load(Ordering::SeqCst);
+    let sleep_seconds = send_sleep.load(Ordering::SeqCst);
     if sleep_seconds > 0 {
         warn!(
             config.logger,
@@ -384,36 +384,35 @@ async fn send_illust<'a>(
         // catch and downcast only if the error is RetryAfter
         if let Err(RequestError::RetryAfter(seconds)) = result {
             warn!(config.logger, "Got retry after {} seconds", seconds);
-            sleep_seconds = send_sleep.load(Ordering::SeqCst);
 
-            // if the timer is not already set
-            if sleep_seconds == 0 {
-                // set global sleep timer
-                warn!(
-                    config.logger,
-                    "Hit rate limit: issuing a sleep timer for {} seconds", seconds
-                );
-                send_sleep.store(seconds as u32, Ordering::SeqCst);
-
-                // keep decrementing the timer so "threads" that join
-                // late will get the correct remainig time
-                while send_sleep.load(Ordering::SeqCst) > 0 {
-                    thread::sleep(Duration::from_secs(1));
-                    send_sleep.fetch_sub(1, Ordering::SeqCst);
+            // set global sleep timer
+            match send_sleep.compare_exchange(0, seconds as u32, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => {
                     warn!(
                         config.logger,
-                        "Sleep timer decayed to {} seconds",
-                        send_sleep.load(Ordering::SeqCst)
+                        "Hit rate limit: issuing a sleep timer for {} seconds", seconds
                     );
+
+                    // keep decrementing the timer so "threads" that join
+                    // late will get the correct remainig time
+                    while send_sleep.load(Ordering::SeqCst) > 0 {
+                        thread::sleep(Duration::from_secs(1));
+                        send_sleep.fetch_sub(1, Ordering::SeqCst);
+                        warn!(
+                            config.logger,
+                            "Sleep timer decayed to {} seconds",
+                            send_sleep.load(Ordering::SeqCst)
+                        );
+                    }
                 }
-            }
-            // if the timer is already set, obey
-            else {
-                warn!(
-                    config.logger,
-                    "Sleep timer set: sleeping for {} seconds", sleep_seconds
-                );
-                thread::sleep(Duration::from_secs(sleep_seconds as u64));
+                Err(sleep_seconds) => {
+                    warn!(
+                        config.logger,
+                        "Sleep timer set: sleeping for {} seconds", sleep_seconds
+                    );
+                    thread::sleep(Duration::from_secs(sleep_seconds as u64));
+                }
             }
         }
         // break out of the loop if the send operation has succeeded
