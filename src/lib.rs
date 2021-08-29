@@ -383,8 +383,6 @@ async fn send_illust<'a>(
 
         // catch and downcast only if the error is RetryAfter
         if let Err(RequestError::RetryAfter(seconds)) = result {
-            warn!(config.logger, "Got retry after {} seconds", seconds);
-
             // set global sleep timer
             match send_sleep.compare_exchange(0, seconds as u32, Ordering::SeqCst, Ordering::SeqCst)
             {
@@ -399,7 +397,7 @@ async fn send_illust<'a>(
                     while send_sleep.load(Ordering::SeqCst) > 0 {
                         thread::sleep(Duration::from_secs(1));
                         send_sleep.fetch_sub(1, Ordering::SeqCst);
-                        warn!(
+                        debug!(
                             config.logger,
                             "Sleep timer decayed to {} seconds",
                             send_sleep.load(Ordering::SeqCst)
@@ -407,7 +405,7 @@ async fn send_illust<'a>(
                     }
                 }
                 Err(sleep_seconds) => {
-                    warn!(
+                    debug!(
                         config.logger,
                         "Sleep timer set: sleeping for {} seconds", sleep_seconds
                     );
