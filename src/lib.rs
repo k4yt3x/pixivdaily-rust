@@ -1,17 +1,26 @@
-use std::error::Error;
+use std::{
+    error::Error,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 
 use chrono::Utc;
 use futures::future::join_all;
 use image::{imageops::FilterType::Lanczos3, load_from_memory, ImageError, ImageFormat::Png};
 use reqwest::header::REFERER;
 use serde::Deserialize;
-use slog::{debug, error, info};
+use slog::{debug, error, info, warn};
 use teloxide::{
     payloads::{PinChatMessageSetters, SendPhotoSetters},
     prelude::*,
     types::{InputFile, ParseMode::MarkdownV2},
+    RequestError,
 };
-use tokio::{spawn, task::JoinHandle};
+use tokio::{task, task::JoinHandle};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
@@ -74,6 +83,7 @@ struct RankingIllust {
 }
 
 /// configs passed to the run function
+#[derive(Clone)]
 pub struct Config {
     logger: slog::Logger,
     token: String,
@@ -294,11 +304,12 @@ fn markdown_escape(text: &String) -> String {
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_illust(
-    config: &Config,
-    bot: &AutoSend<Bot>,
-    illust: &Illust,
-) -> Result<(), Box<dyn Error>> {
+async fn send_illust<'a>(
+    config: Config,
+    bot: AutoSend<Bot>,
+    illust: Illust,
+    send_sleep: Arc<AtomicU32>,
+) -> Result<(), anyhow::Error> {
     info!(config.logger, "Retrieving image id={}", illust.id);
     let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
 
@@ -349,11 +360,51 @@ async fn send_illust(
 
     // send the photo with the caption
     info!(config.logger, "Sending illustration id={}", illust.id);
-    bot.send_photo(config.chat_id, image)
-        .parse_mode(MarkdownV2)
-        .caption(captions.join("\n"))
-        .disable_notification(true)
-        .await?;
+
+    // test if a sleep timer is set
+    let mut sleep_seconds = send_sleep.load(Ordering::SeqCst);
+    if sleep_seconds > 0 {
+        warn!(
+            config.logger,
+            "Sleep timer set: sleeping for {} seconds", sleep_seconds
+        );
+        thread::sleep(Duration::from_secs(sleep_seconds as u64));
+    }
+
+    // retry up to 10 times if the API rate limit has been exceeded
+    for _ in 0..5 {
+        if let Err(RequestError::RetryAfter(seconds)) = bot
+            .send_photo(config.chat_id, image.clone())
+            .parse_mode(MarkdownV2)
+            .caption(captions.join("\n"))
+            .disable_notification(true)
+            .await
+        {
+            sleep_seconds = send_sleep.load(Ordering::SeqCst);
+
+            if sleep_seconds == 0 {
+                warn!(
+                    config.logger,
+                    "Hit rate limit: issuing a sleep timer for {} seconds", seconds
+                );
+                send_sleep.store(seconds as u32, Ordering::SeqCst);
+                for _ in 0..seconds {
+                    thread::sleep(Duration::from_secs(1));
+                    send_sleep.store(send_sleep.load(Ordering::SeqCst) - 1, Ordering::SeqCst);
+                }
+            }
+            else {
+                warn!(
+                    config.logger,
+                    "Sleep timer set: sleeping for {} seconds", sleep_seconds
+                );
+                thread::sleep(Duration::from_secs(sleep_seconds as u64));
+            }
+        }
+        else {
+            break;
+        }
+    }
 
     Ok(())
 }
@@ -376,14 +427,19 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     );
     let bot = Bot::new(&config.token).auto_send();
     let today = Utc::today().format("%B %-d, %Y").to_string();
+    let send_sleep = Arc::new(AtomicU32::new(0));
 
     // fetch daily top 50
     info!(config.logger, "Fetching top 50 illustrations ({})", today);
-    let mut tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
+    let mut get_illust_tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
 
     for illust in get_pixiv_daily_ranking().await? {
-        tasks.push(spawn(get_illust_details(illust.illust_id.to_string())));
+        get_illust_tasks.push(task::spawn(get_illust_details(
+            illust.illust_id.to_string(),
+        )));
     }
+
+    let mut send_illust_tasks: Vec<JoinHandle<Result<(), anyhow::Error>>> = vec![];
 
     // send today's date and pin the message
     let date_message = bot.send_message(config.chat_id, today).await?;
@@ -392,12 +448,23 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         .await?;
 
     // send each of the illustrations
-    for task in join_all(tasks).await {
-        let illust = task??;
+    for illust in join_all(get_illust_tasks).await {
+        send_illust_tasks.push(task::spawn(send_illust(
+            config.clone(),
+            bot.clone(),
+            illust??,
+            send_sleep.clone(),
+        )));
+    }
 
-        // send the illustration
-        if let Err(error) = send_illust(&config, &bot, &illust).await {
-            error!(config.logger, "id={} {}", &illust.id, error);
+    for result in join_all(send_illust_tasks).await {
+        if let Err(error) = result? {
+            if let Some(illust_id) = error.downcast_ref::<String>() {
+                error!(config.logger, "id={} error={}", illust_id, error);
+            }
+            else {
+                error!(config.logger, "{}", error);
+            }
         }
     }
 
