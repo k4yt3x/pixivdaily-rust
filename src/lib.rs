@@ -407,7 +407,7 @@ async fn send_illust<'a>(
                 Err(sleep_seconds) => {
                     debug!(
                         config.logger,
-                        "Sleep timer set: sleeping for {} seconds", sleep_seconds
+                        "Sleep timer found: sleeping for {} seconds", sleep_seconds
                     );
                     thread::sleep(Duration::from_secs(sleep_seconds as u64));
                 }
