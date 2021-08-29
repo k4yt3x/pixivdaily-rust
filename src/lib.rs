@@ -11,7 +11,7 @@ use std::{
 use chrono::Utc;
 use futures::future::join_all;
 use image::{imageops::FilterType::Lanczos3, load_from_memory, ImageError, ImageFormat::Png};
-use reqwest::header::REFERER;
+use reqwest::{header::REFERER, Client};
 use serde::Deserialize;
 use slog::{debug, error, info, warn};
 use teloxide::{
@@ -300,6 +300,7 @@ fn markdown_escape(text: &String) -> String {
 /// * `config` - an instance of Config
 /// * `bot` - an instance of AutoSend<Bot>
 /// * `illust` - an Illust struct which represents an illustration
+/// * `send_sleep` - global sleep timer
 ///
 /// # Errors
 ///
@@ -436,27 +437,31 @@ async fn send_illust<'a>(
 ///
 /// any error that implements the Error trait
 pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    // initialize bot instance
     info!(
         config.logger,
         "PixivDaily bot {version} initializing",
         version = VERSION
     );
-    let bot = Bot::new(&config.token).auto_send();
-    let today = Utc::today().format("%B %-d, %Y").to_string();
-    let send_sleep = Arc::new(AtomicU32::new(0));
+
+    // initialize bot instance with a custom client
+    // the default pool idle timeout is 90 seconds, which is too small
+    // for large images to be uploaded
+    let client = Client::builder()
+        .pool_idle_timeout(Duration::from_secs(300))
+        .build()?;
+    let bot = Bot::with_client(&config.token, client).auto_send();
 
     // fetch daily top 50
+    let today = Utc::today().format("%B %-d, %Y").to_string();
     info!(config.logger, "Fetching top 50 illustrations ({})", today);
-    let mut get_illust_tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
 
+    // push get illust detail tasks into a Vec
+    let mut get_illust_tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
     for illust in get_pixiv_daily_ranking().await? {
         get_illust_tasks.push(task::spawn(get_illust_details(
             illust.illust_id.to_string(),
         )));
     }
-
-    let mut send_illust_tasks: Vec<JoinHandle<Result<(), anyhow::Error>>> = vec![];
 
     // send today's date and pin the message
     let date_message = bot.send_message(config.chat_id, today).await?;
@@ -465,6 +470,8 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         .await?;
 
     // send each of the illustrations
+    let mut send_illust_tasks: Vec<JoinHandle<Result<(), anyhow::Error>>> = vec![];
+    let send_sleep = Arc::new(AtomicU32::new(0));
     for illust in join_all(get_illust_tasks).await {
         send_illust_tasks.push(task::spawn(send_illust(
             config.clone(),
@@ -474,13 +481,17 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         )));
     }
 
+    // print errors in finished tasks if any
     for result in join_all(send_illust_tasks).await {
         if let Err(error) = result? {
             if let Some(illust_id) = error.downcast_ref::<String>() {
-                error!(config.logger, "id={} error={}", illust_id, error);
+                error!(
+                    config.logger,
+                    "Error sending photo: {} {}", illust_id, error
+                );
             }
             else {
-                error!(config.logger, "{}", error);
+                error!(config.logger, "Error sending photo: {}", error);
             }
         }
     }
