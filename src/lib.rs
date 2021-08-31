@@ -1,12 +1,4 @@
-use std::{
-    error::Error,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
-    thread,
-    time::Duration,
-};
+use std::{error::Error, time::Duration};
 
 use chrono::Utc;
 use futures::future::join_all;
@@ -20,7 +12,7 @@ use teloxide::{
     types::{InputFile, ParseMode::MarkdownV2},
     RequestError,
 };
-use tokio::{task, task::JoinHandle};
+use tokio::{task, task::JoinHandle, time};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
@@ -309,7 +301,6 @@ async fn send_illust<'a>(
     config: Config,
     bot: AutoSend<Bot>,
     illust: Illust,
-    send_sleep: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
     info!(config.logger, "Retrieving image id={}", illust.id);
     let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
@@ -359,21 +350,13 @@ async fn send_illust<'a>(
         format!("Tags: {}", tag_strings.join(", ")),
     ];
 
-    // send the photo with the caption
-    info!(config.logger, "Sending illustration id={}", illust.id);
-
-    // test if a sleep timer is set
-    let sleep_seconds = send_sleep.load(Ordering::SeqCst);
-    if sleep_seconds > 0 {
-        warn!(
+    // retry up to 8 times if the API rate limit has been exceeded
+    for attempt in 0..8 {
+        // send the photo with the caption
+        info!(
             config.logger,
-            "Sleep timer set: sleeping for {} seconds", sleep_seconds
+            "Sending illustration attempt={} id={}", attempt, illust.id
         );
-        thread::sleep(Duration::from_secs(sleep_seconds as u64));
-    }
-
-    // retry up to 5 times if the API rate limit has been exceeded
-    for _ in 0..5 {
         let result = bot
             .send_photo(config.chat_id, image.clone())
             .parse_mode(MarkdownV2)
@@ -383,35 +366,11 @@ async fn send_illust<'a>(
 
         // catch and downcast only if the error is RetryAfter
         if let Err(RequestError::RetryAfter(seconds)) = result {
-            // set global sleep timer
-            match send_sleep.compare_exchange(0, seconds as u32, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(_) => {
-                    warn!(
-                        config.logger,
-                        "Hit rate limit: issuing a sleep timer for {} seconds", seconds
-                    );
-
-                    // keep decrementing the timer so "threads" that join
-                    // late will get the correct remainig time
-                    while send_sleep.load(Ordering::SeqCst) > 0 {
-                        thread::sleep(Duration::from_secs(1));
-                        send_sleep.fetch_sub(1, Ordering::SeqCst);
-                        debug!(
-                            config.logger,
-                            "Sleep timer decayed to {} seconds",
-                            send_sleep.load(Ordering::SeqCst)
-                        );
-                    }
-                }
-                Err(sleep_seconds) => {
-                    debug!(
-                        config.logger,
-                        "Sleep timer found: sleeping for {} seconds", sleep_seconds
-                    );
-                    thread::sleep(Duration::from_secs(sleep_seconds as u64));
-                }
-            }
+            warn!(
+                config.logger,
+                "Hit rate limit: sleeping for {} seconds", seconds
+            );
+            time::sleep(Duration::from_secs(seconds as u64)).await;
         }
         // break out of the loop if the send operation has succeeded
         // or if the error cannot be handled
@@ -468,13 +427,11 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     // send each of the illustrations
     let mut send_illust_tasks: Vec<JoinHandle<Result<(), anyhow::Error>>> = vec![];
-    let send_sleep = Arc::new(AtomicU32::new(0));
     for illust in join_all(get_illust_tasks).await {
         send_illust_tasks.push(task::spawn(send_illust(
             config.clone(),
             bot.clone(),
             illust??,
-            send_sleep.clone(),
         )));
     }
 
