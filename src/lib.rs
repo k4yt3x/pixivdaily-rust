@@ -314,7 +314,7 @@ async fn send_illust<'a>(
     )
     .await?;
 
-    // download image into memoery
+    // download image into memory
     // and convert it into an InputFile
     let image = InputFile::memory("image", image_bytes);
 
