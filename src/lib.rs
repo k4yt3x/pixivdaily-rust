@@ -1,15 +1,15 @@
 use std::{error::Error, time::Duration};
 
 use chrono::Utc;
-use futures::future::join_all;
-use image::{imageops::FilterType::Lanczos3, load_from_memory, ImageError, ImageFormat::Png};
-use reqwest::{header::REFERER, Client};
+use futures::future;
+use image::{imageops::FilterType, ImageError, ImageFormat};
+use reqwest::{header, Client};
 use serde::Deserialize;
 use slog::{debug, error, info, warn};
 use teloxide::{
     payloads::{PinChatMessageSetters, SendPhotoSetters},
     prelude::*,
-    types::{InputFile, ParseMode::MarkdownV2},
+    types::{InputFile, ParseMode},
     RequestError,
 };
 use tokio::{task, task::JoinHandle, time};
@@ -160,7 +160,7 @@ async fn get_illust_details(id: String) -> Result<Illust, reqwest::Error> {
 async fn download_image(url: &String, referer: &String) -> Result<Vec<u8>, reqwest::Error> {
     Ok(reqwest::Client::new()
         .get(url)
-        .header(REFERER, referer)
+        .header(header::REFERER, referer)
         .send()
         .await?
         .bytes()
@@ -220,15 +220,15 @@ async fn resize_image(
     }
 
     // load the image from memory into ImageBuffer
-    let mut dynamic_image = load_from_memory(&image_bytes)?;
+    let mut dynamic_image = image::load_from_memory(&image_bytes)?;
 
     loop {
         // downsize the image with Lanczos3
-        dynamic_image = dynamic_image.resize(target_width, target_height, Lanczos3);
+        dynamic_image = dynamic_image.resize(target_width, target_height, FilterType::Lanczos3);
 
         // encode raw bytes into PNG bytes
         let mut png_bytes = vec![];
-        dynamic_image.write_to(&mut png_bytes, Png)?;
+        dynamic_image.write_to(&mut png_bytes, ImageFormat::Png)?;
 
         // return the image if it is small enough
         if png_bytes.len() < MAX_IMAGE_SIZE {
@@ -359,7 +359,7 @@ async fn send_illust<'a>(
         );
         let result = bot
             .send_photo(config.chat_id, image.clone())
-            .parse_mode(MarkdownV2)
+            .parse_mode(ParseMode::MarkdownV2)
             .caption(captions.join("\n"))
             .disable_notification(true)
             .await;
@@ -427,7 +427,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     // send each of the illustrations
     let mut send_illust_tasks: Vec<JoinHandle<Result<(), anyhow::Error>>> = vec![];
-    for illust in join_all(get_illust_tasks).await {
+    for illust in future::join_all(get_illust_tasks).await {
         send_illust_tasks.push(task::spawn(send_illust(
             config.clone(),
             bot.clone(),
@@ -436,7 +436,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
 
     // print errors in finished tasks if any
-    for result in join_all(send_illust_tasks).await {
+    for result in future::join_all(send_illust_tasks).await {
         if let Err(error) = result? {
             if let Some(illust_id) = error.downcast_ref::<String>() {
                 error!(
