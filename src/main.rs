@@ -1,5 +1,6 @@
-use std::{env, error::Error, process, sync::Mutex};
+use std::{process, sync::Mutex};
 
+use anyhow::Result;
 use clap::{value_t_or_exit, Arg};
 use pixivdaily::{run, Config, VERSION};
 use slog::{o, Drain};
@@ -16,19 +17,20 @@ use slog::{o, Drain};
 /// ```
 /// let config = parse()?;
 /// ```
-fn parse() -> Result<Config, Box<dyn Error>> {
+fn parse() -> Result<Config> {
     // parse command line arguments
     let matches = clap::App::new("pixivdaily")
         .version(VERSION)
         .author("K4YT3X <i@k4yt3x.com>")
-        .about("Source code for the Telegram channel @pixiv_daily")
+        .about("A Telegram bot that posts Pixiv's daily rankings for @pixiv_daily")
         .arg(
             Arg::with_name("chat-id")
                 .short("c")
                 .long("chat-id")
                 .value_name("CHATID")
                 .help("chat ID to send photos to")
-                .takes_value(true),
+                .takes_value(true)
+                .env("TELOXIDE_CHAT_ID"),
         )
         .arg(
             Arg::with_name("token")
@@ -36,15 +38,10 @@ fn parse() -> Result<Config, Box<dyn Error>> {
                 .long("token")
                 .value_name("TOKEN")
                 .help("Telegram bot token")
-                .takes_value(true),
+                .takes_value(true)
+                .env("TELOXIDE_TOKEN"),
         )
         .get_matches();
-
-    let chat_id = env::var("TELOXIDE_CHAT_ID")
-        .unwrap_or_else(|_| value_t_or_exit!(matches.value_of("chat-id"), String));
-
-    let token = env::var("TELOXIDE_TOKEN")
-        .unwrap_or_else(|_| value_t_or_exit!(matches.value_of("token"), String));
 
     // assign command line values to variables
     Ok(Config::new(
@@ -53,8 +50,8 @@ fn parse() -> Result<Config, Box<dyn Error>> {
             let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
             slog::Logger::root(drain, o!())
         },
-        token,
-        chat_id.parse::<i64>()?,
+        value_t_or_exit!(matches.value_of("token"), String),
+        value_t_or_exit!(matches.value_of("chat-id"), i64),
     ))
 }
 

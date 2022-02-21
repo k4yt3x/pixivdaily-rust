@@ -1,5 +1,6 @@
-use std::{error::Error, time::Duration};
+use std::time::Duration;
 
+use anyhow::Result;
 use chrono::Utc;
 use futures::future;
 use image::{imageops::FilterType, ImageError, ImageFormat};
@@ -7,9 +8,9 @@ use reqwest::{header, Client};
 use serde::Deserialize;
 use slog::{debug, error, info, warn};
 use teloxide::{
-    payloads::{PinChatMessageSetters, SendPhotoSetters},
+    payloads::PinChatMessageSetters,
     prelude::*,
-    types::{InputFile, ParseMode},
+    types::{InputFile, InputMedia, InputMediaPhoto, ParseMode},
     RequestError,
 };
 use tokio::{task, task::JoinHandle, time};
@@ -17,6 +18,7 @@ use tokio::{task, task::JoinHandle, time};
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct IllustResponse {
     error: bool,
@@ -29,6 +31,7 @@ struct IllustBody {
     illust_details: Illust,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Illust {
     id: String,
@@ -36,6 +39,8 @@ struct Illust {
     width: String,
     height: String,
     tags: Vec<String>,
+    illust_images: Option<Vec<IllustImages>>,
+    manga_a: Option<Vec<Manga>>,
     rating_count: String,
     rating_view: String,
     bookmark_user_total: u32,
@@ -47,11 +52,25 @@ struct Illust {
 }
 
 #[derive(Debug, Deserialize)]
+struct IllustImages {
+    illust_image_width: String,
+    illust_image_height: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Manga {
+    page: u32,
+    url_big: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
 struct IllustMeta {
     description: String,
     canonical: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Author {
     user_id: String,
@@ -64,6 +83,7 @@ struct RankingResponse {
     contents: Vec<RankingIllust>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct RankingIllust {
     title: String,
@@ -297,29 +317,8 @@ fn markdown_escape(text: &String) -> String {
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_illust<'a>(
-    config: Config,
-    bot: AutoSend<Bot>,
-    illust: Illust,
-) -> Result<(), anyhow::Error> {
-    info!(config.logger, "Retrieving image id={}", illust.id);
-    let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
-
-    let image_bytes = resize_image(
-        &config,
-        original_image,
-        &illust.id,
-        illust.width.parse::<u32>()?,
-        illust.height.parse::<u32>()?,
-    )
-    .await?;
-
-    // download image into memory
-    // and convert it into an InputFile
-    let image = InputFile::memory("image", image_bytes);
-
+async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> Result<()> {
     let mut tag_strings = vec![];
-
     for tag in &illust.tags {
         tag_strings.push(
             format!(
@@ -333,7 +332,7 @@ async fn send_illust<'a>(
 
     // format captions
     // each element is one line
-    let captions = vec![
+    let mut captions = vec![
         format!(
             "Title: [{} \\({}\\)](https://www\\.pixiv\\.net/artworks/{})",
             markdown_escape(&illust.title),
@@ -350,37 +349,119 @@ async fn send_illust<'a>(
         format!("Tags: {}", tag_strings.join(", ")),
     ];
 
+    // holds all InputMedia enums for sendMediaGroup
+    let mut images = Vec::new();
+
+    // if illustration is a manga
+    if let (Some(manga), Some(illust_images)) = (illust.manga_a, illust.illust_images) {
+        // update the caption with the manga's page count
+        captions.push(format!("Pages: {}", manga.len()));
+
+        // add each manga into images
+        for image in manga {
+            info!(
+                config.logger,
+                "Retrieving manga id={} page={}", illust.id, image.page
+            );
+            let original_image = download_image(&image.url_big, &illust.meta.canonical).await?;
+            let image_bytes = resize_image(
+                &config,
+                original_image,
+                &illust.id,
+                illust_images[image.page as usize]
+                    .illust_image_width
+                    .parse::<u32>()?,
+                illust_images[image.page as usize]
+                    .illust_image_height
+                    .parse::<u32>()?,
+            )
+            .await?;
+            images.push(InputMedia::Photo(InputMediaPhoto {
+                media: InputFile::memory("image", image_bytes),
+                caption: match images.len() {
+                    0 => Some(captions.join("\n")),
+                    _ => None,
+                },
+                parse_mode: match images.len() {
+                    0 => Some(ParseMode::MarkdownV2),
+                    _ => None,
+                },
+                caption_entities: None,
+            }));
+
+            // one media group can contain a max of 10 images
+            if images.len() == 10 {
+                break;
+            }
+        }
+    }
+    // if this is not a manga
+    else {
+        info!(config.logger, "Retrieving image id={}", illust.id);
+        let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
+        let image_bytes = resize_image(
+            &config,
+            original_image,
+            &illust.id,
+            illust.width.parse::<u32>()?,
+            illust.height.parse::<u32>()?,
+        )
+        .await?;
+        images.push(InputMedia::Photo(InputMediaPhoto {
+            media: InputFile::memory("image", image_bytes),
+            caption: Some(captions.join("\n")),
+            parse_mode: Some(ParseMode::MarkdownV2),
+            caption_entities: None,
+        }));
+    }
+
+    // contains the final result
+    let mut result: Option<Result<Vec<Message>, RequestError>> = None;
+
     // retry up to 8 times if the API rate limit has been exceeded
-    for attempt in 0..8 {
+    for attempt in 0..10 {
         // send the photo with the caption
         info!(
             config.logger,
             "Sending illustration attempt={} id={}", attempt, illust.id
         );
-        let result = bot
-            .send_photo(config.chat_id, image.clone())
-            .parse_mode(ParseMode::MarkdownV2)
-            .caption(captions.join("\n"))
-            .disable_notification(true)
-            .await;
+        result = Some(
+            bot.send_media_group(config.chat_id, images.clone())
+                .disable_notification(true)
+                .await,
+        );
 
         // catch and downcast only if the error is RetryAfter
-        if let Err(RequestError::RetryAfter(seconds)) = result {
+        if let Some(Err(RequestError::RetryAfter(seconds))) = result {
             warn!(
                 config.logger,
                 "Hit rate limit: sleeping for {} seconds", seconds
             );
             time::sleep(Duration::from_secs(seconds as u64)).await;
         }
+        else if let Some(Err(error)) = &result {
+            warn!(
+                config.logger,
+                "Error sending illustration: id={} message={:?}", illust.id, error
+            );
+        }
         // break out of the loop if the send operation has succeeded
-        // or if the error cannot be handled
         else {
-            result?;
             break;
         }
     }
 
-    Ok(())
+    // return the error if the send operation has not succeeded after 10 attempts
+    if let Some(Err(error)) = result {
+        error!(
+            config.logger,
+            "Giving up sending illustration: id={} message={:?}", illust.id, error
+        );
+        Err(error.into())
+    }
+    else {
+        Ok(())
+    }
 }
 
 /// entry point for the functional part of this program
@@ -392,7 +473,7 @@ async fn send_illust<'a>(
 /// # Errors
 ///
 /// any error that implements the Error trait
-pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+pub async fn run(config: Config) -> Result<()> {
     info!(
         config.logger,
         "PixivDaily bot {version} initializing",
@@ -403,7 +484,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // the default pool idle timeout is 90 seconds, which is too small
     // for large images to be uploaded
     let client = Client::builder()
-        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_idle_timeout(Duration::from_secs(6000))
         .build()?;
     let bot = Bot::with_client(&config.token, client).auto_send();
 
