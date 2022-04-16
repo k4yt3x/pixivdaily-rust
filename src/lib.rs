@@ -418,8 +418,8 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
     // contains the final result
     let mut result: Option<Result<Vec<Message>, RequestError>> = None;
 
-    // retry up to 8 times if the API rate limit has been exceeded
-    for attempt in 0..10 {
+    // retry up to 20 times if the API rate limit has been exceeded
+    for attempt in 0..20 {
         // send the photo with the caption
         info!(
             config.logger,
