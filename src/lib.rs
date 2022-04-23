@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2021-2022 K4YT3X.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; only version 2
+ * of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 use std::time::Duration;
 
 use anyhow::Result;
@@ -80,18 +96,20 @@ struct Author {
 
 #[derive(Debug, Deserialize)]
 struct RankingResponse {
-    contents: Vec<RankingIllust>,
+    body: RankingBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct RankingBody {
+    ranking: Vec<RankingIllust>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RankingIllust {
-    title: String,
-    tags: Vec<String>,
-    illust_id: u32,
+    illust_id: String,
     rank: u32,
-    rating_count: u32,
-    view_count: u32,
 }
 
 /// configs passed to the run function
@@ -100,14 +118,18 @@ pub struct Config {
     logger: slog::Logger,
     token: String,
     chat_id: i64,
+    pages: u32,
+    r18: bool,
 }
 
 impl Config {
-    pub fn new(logger: slog::Logger, token: String, chat_id: i64) -> Config {
+    pub fn new(logger: slog::Logger, token: String, chat_id: i64, pages: u32, r18: bool) -> Config {
         Config {
             logger,
             token,
             chat_id,
+            pages,
+            r18,
         }
     }
 }
@@ -121,16 +143,35 @@ impl Config {
 /// # Examples
 ///
 /// ```
-/// let contents = get_pixiv_daily_ranking().await?;
+/// let ranking = get_pixiv_daily_ranking(&config).await?;
 /// ```
-async fn get_pixiv_daily_ranking() -> Result<Vec<RankingIllust>, reqwest::Error> {
-    Ok(
-        reqwest::get("https://www.pixiv.net/ranking.php?mode=daily&format=json")
+async fn get_pixiv_daily_ranking(config: &Config) -> Result<Vec<RankingIllust>, reqwest::Error> {
+    let mut illusts = Vec::new();
+
+    for page in 1..config.pages + 1 {
+        illusts.push(
+            reqwest::get(format!(
+                "https://www.pixiv.net/touch/ajax/ranking/illust?mode={}&type=all&page={}",
+                {
+                    if config.r18 {
+                        "daily_r18"
+                    }
+                    else {
+                        "daily"
+                    }
+                },
+                page
+            ))
             .await?
             .json::<RankingResponse>()
             .await?
-            .contents,
-    )
+            .body
+            .ranking,
+        )
+    }
+
+    // flatten Vec<Vec<RankingIllust>> and return
+    Ok(illusts.into_iter().flatten().collect())
 }
 
 /// get detailed information about a specific illustration
@@ -494,7 +535,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     // push get illust detail tasks into a Vec
     let mut get_illust_tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
-    for illust in get_pixiv_daily_ranking().await? {
+    for illust in get_pixiv_daily_ranking(&config).await? {
         get_illust_tasks.push(task::spawn(get_illust_details(
             illust.illust_id.to_string(),
         )));
@@ -520,13 +561,10 @@ pub async fn run(config: Config) -> Result<()> {
     for result in future::join_all(send_illust_tasks).await {
         if let Err(error) = result? {
             if let Some(illust_id) = error.downcast_ref::<String>() {
-                error!(
-                    config.logger,
-                    "Error sending photo: {} {}", illust_id, error
-                );
+                error!(config.logger, "Failed task: {} {}", illust_id, error);
             }
             else {
-                error!(config.logger, "Error sending photo: {}", error);
+                error!(config.logger, "Failed task: {}", error);
             }
         }
     }
