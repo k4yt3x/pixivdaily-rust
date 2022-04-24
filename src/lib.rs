@@ -255,7 +255,7 @@ async fn resize_image(
     if image_bytes.len() <= MAX_IMAGE_SIZE {
         return Ok(image_bytes);
     }
-    info!(config.logger, "Resizing oversized image id={}", id);
+    info!(config.logger, "Resizing oversized image: id={}", id);
 
     // this is a very rough guess
     // could be improved in the future
@@ -407,7 +407,7 @@ async fn send_illust<'a>(
         for image in manga {
             info!(
                 config.logger,
-                "Retrieving manga id={} page={}", illust.id, image.page
+                "Retrieving manga: id={} page={}", illust.id, image.page
             );
             let original_image = download_image(&image.url_big, &illust.meta.canonical).await?;
             let image_bytes = resize_image(
@@ -443,7 +443,7 @@ async fn send_illust<'a>(
     }
     // if this is not a manga
     else {
-        info!(config.logger, "Retrieving image id={}", illust.id);
+        info!(config.logger, "Retrieving image: id={}", illust.id);
         let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
         let image_bytes = resize_image(
             &config,
@@ -470,7 +470,7 @@ async fn send_illust<'a>(
         // send the photo with the caption
         info!(
             config.logger,
-            "Sending illustration attempt={} id={}", attempt, illust.id
+            "Sending artwork: id={} attempt={}", illust.id, attempt
         );
         result = Some(
             bot.send_media_group(config.chat_id, images.clone())
@@ -482,14 +482,14 @@ async fn send_illust<'a>(
         if let Some(Err(error)) = &result {
             warn!(
                 config.logger,
-                "Error sending illustration: id={} message={:?}", illust.id, error
+                "Temporary error sending artwork: id={} message={:?}", illust.id, error
             );
         }
         // break out of the loop if the send operation has succeeded
         else {
             debug!(
                 config.logger,
-                "Successfully sent attempt={} id={}", attempt, illust.id
+                "Successfully sent artwork: id={} attempt={}", illust.id, attempt
             );
             break;
         }
@@ -497,10 +497,6 @@ async fn send_illust<'a>(
 
     // return the error if the send operation has not succeeded after 10 attempts
     if let Some(Err(error)) = result {
-        error!(
-            config.logger,
-            "Giving up sending illustration: id={} message={:?}", illust.id, error
-        );
         Err(error.into())
     }
     else {
@@ -538,7 +534,7 @@ pub async fn run(config: Config) -> Result<()> {
     let today = Utc::today().format("%B %-d, %Y").to_string();
     info!(
         config.logger,
-        "Fetching illustrations date={} pages={} r18={}", today, config.pages, config.r18
+        "Fetching illustrations: date={} pages={} r18={}", today, config.pages, config.r18
     );
 
     // push get illust detail tasks into a Vec
@@ -569,10 +565,13 @@ pub async fn run(config: Config) -> Result<()> {
     for result in future::join_all(send_illust_tasks).await {
         if let Err(error) = result? {
             if let Some(illust_id) = error.downcast_ref::<String>() {
-                error!(config.logger, "Failed task: {} {}", illust_id, error);
+                error!(
+                    config.logger,
+                    "Failed sending artwork: id={} message={}", illust_id, error
+                );
             }
             else {
-                error!(config.logger, "Failed task: {}", error);
+                error!(config.logger, "Failed sending artwork: message={}", error);
             }
         }
     }
