@@ -26,10 +26,11 @@ use slog::{debug, error, info, warn};
 use teloxide::{
     payloads::PinChatMessageSetters,
     prelude::*,
-    types::{InputFile, InputMedia, InputMediaPhoto, ParseMode},
+    types::{ChatId, InputFile, InputMedia, InputMediaPhoto, ParseMode},
     RequestError,
 };
-use tokio::{task, task::JoinHandle, time};
+use teloxide_core::adaptors::throttle::{Limits, Throttle};
+use tokio::{task, task::JoinHandle};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
@@ -117,7 +118,7 @@ struct RankingIllust {
 pub struct Config {
     logger: slog::Logger,
     token: String,
-    chat_id: i64,
+    chat_id: ChatId,
     pages: u32,
     r18: bool,
 }
@@ -127,7 +128,7 @@ impl Config {
         Config {
             logger,
             token,
-            chat_id,
+            chat_id: ChatId(chat_id),
             pages,
             r18,
         }
@@ -351,14 +352,18 @@ fn markdown_escape(text: &String) -> String {
 /// # Arguments
 ///
 /// * `config` - an instance of Config
-/// * `bot` - an instance of AutoSend<Bot>
+/// * `bot` - an instance of AutoSend<Throttle<Bot>>
 /// * `illust` - an Illust struct which represents an illustration
 /// * `send_sleep` - global sleep timer
 ///
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> Result<()> {
+async fn send_illust<'a>(
+    config: Config,
+    bot: AutoSend<Throttle<Bot>>,
+    illust: Illust,
+) -> Result<()> {
     let mut tag_strings = vec![];
     for tag in &illust.tags {
         tag_strings.push(
@@ -418,7 +423,7 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
             )
             .await?;
             images.push(InputMedia::Photo(InputMediaPhoto {
-                media: InputFile::memory("image", image_bytes),
+                media: InputFile::memory(image_bytes),
                 caption: match images.len() {
                     0 => Some(captions.join("\n")),
                     _ => None,
@@ -449,7 +454,7 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
         )
         .await?;
         images.push(InputMedia::Photo(InputMediaPhoto {
-            media: InputFile::memory("image", image_bytes),
+            media: InputFile::memory(image_bytes),
             caption: Some(captions.join("\n")),
             parse_mode: Some(ParseMode::MarkdownV2),
             caption_entities: None,
@@ -459,8 +464,9 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
     // contains the final result
     let mut result: Option<Result<Vec<Message>, RequestError>> = None;
 
-    // retry up to 20 times if the API rate limit has been exceeded
-    for attempt in 0..20 {
+    // retry up to 10 times since the send attempt might run into temporary errors like
+    // Api(Unknown("Bad Request: group send failed"))
+    for attempt in 0..10 {
         // send the photo with the caption
         info!(
             config.logger,
@@ -472,15 +478,8 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
                 .await,
         );
 
-        // catch and downcast only if the error is RetryAfter
-        if let Some(Err(RequestError::RetryAfter(seconds))) = result {
-            warn!(
-                config.logger,
-                "Hit rate limit: sleeping for {} seconds", seconds
-            );
-            time::sleep(Duration::from_secs(seconds as u64)).await;
-        }
-        else if let Some(Err(error)) = &result {
+        // if an error has occurred, print the error's message
+        if let Some(Err(error)) = &result {
             warn!(
                 config.logger,
                 "Error sending illustration: id={} message={:?}", illust.id, error
@@ -488,6 +487,10 @@ async fn send_illust<'a>(config: Config, bot: AutoSend<Bot>, illust: Illust) -> 
         }
         // break out of the loop if the send operation has succeeded
         else {
+            debug!(
+                config.logger,
+                "Successfully sent attempt={} id={}", attempt, illust.id
+            );
             break;
         }
     }
@@ -522,16 +525,21 @@ pub async fn run(config: Config) -> Result<()> {
     );
 
     // initialize bot instance with a custom client
-    // the default pool idle timeout is 90 seconds, which is too small
-    // for large images to be uploaded
+    // the default pool idle timeout is 90 seconds, which is too small for large
+    // images to be uploaded
     let client = Client::builder()
         .pool_idle_timeout(Duration::from_secs(6000))
         .build()?;
-    let bot = Bot::with_client(&config.token, client).auto_send();
+    let bot = Bot::with_client(&config.token, client)
+        .throttle(Limits::default())
+        .auto_send();
 
     // fetch daily top 50
     let today = Utc::today().format("%B %-d, %Y").to_string();
-    info!(config.logger, "Fetching top 50 illustrations ({})", today);
+    info!(
+        config.logger,
+        "Fetching illustrations date={} pages={} r18={}", today, config.pages, config.r18
+    );
 
     // push get illust detail tasks into a Vec
     let mut get_illust_tasks: Vec<JoinHandle<Result<Illust, reqwest::Error>>> = vec![];
