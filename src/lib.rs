@@ -14,7 +14,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::time::Duration;
+use std::{
+    io::{Cursor, Read},
+    time::Duration,
+};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -289,8 +292,12 @@ async fn resize_image(
         dynamic_image = dynamic_image.resize(target_width, target_height, FilterType::Lanczos3);
 
         // encode raw bytes into PNG bytes
-        let mut png_bytes = vec![];
-        dynamic_image.write_to(&mut png_bytes, ImageFormat::Png)?;
+        let mut png_bytes_cursor = Cursor::new(vec![]);
+        dynamic_image.write_to(&mut png_bytes_cursor, ImageFormat::Png)?;
+
+        // read all bytes from cursor
+        let mut png_bytes = Vec::new();
+        png_bytes_cursor.read_to_end(&mut png_bytes)?;
 
         // return the image if it is small enough
         if png_bytes.len() < MAX_IMAGE_SIZE {
@@ -352,18 +359,14 @@ fn markdown_escape(text: &String) -> String {
 /// # Arguments
 ///
 /// * `config` - an instance of Config
-/// * `bot` - an instance of AutoSend<Throttle<Bot>>
+/// * `bot` - an instance of Throttle<Bot>
 /// * `illust` - an Illust struct which represents an illustration
 /// * `send_sleep` - global sleep timer
 ///
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_illust<'a>(
-    config: Config,
-    bot: AutoSend<Throttle<Bot>>,
-    illust: Illust,
-) -> Result<()> {
+async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> Result<()> {
     let mut tag_strings = vec![];
     for tag in &illust.tags {
         tag_strings.push(
@@ -526,9 +529,7 @@ pub async fn run(config: Config) -> Result<()> {
     let client = Client::builder()
         .pool_idle_timeout(Duration::from_secs(6000))
         .build()?;
-    let bot = Bot::with_client(&config.token, client)
-        .throttle(Limits::default())
-        .auto_send();
+    let bot = Bot::with_client(&config.token, client).throttle(Limits::default());
 
     // fetch daily top 50
     let today = Utc::today().format("%B %-d, %Y").to_string();

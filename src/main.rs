@@ -17,9 +17,29 @@
 use std::{process, sync::Mutex};
 
 use anyhow::Result;
-use clap::{Arg, Command};
-use pixivdaily::{run, Config, VERSION};
+use clap::Parser;
+use pixivdaily::{run, Config};
 use slog::{o, Drain};
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Telegram bot API token
+    #[arg(short, long, env = "TELOXIDE_TOKEN")]
+    token: String,
+
+    /// ID of the chat to send messages to
+    #[arg(short, long, env = "TELOXIDE_CHAT_ID")]
+    chat_id: i64,
+
+    /// number of ranking pages to fetch (18 illusts/page)
+    #[arg(short, long, default_value_t = 3, env = "PIXIV_RANKING_PAGES")]
+    pages: u32,
+
+    /// run in R18 mode
+    #[arg(short, long, env = "PIXIV_R18")]
+    r18: bool,
+}
 
 /// parse the command line arguments and return a new
 /// Config instance
@@ -34,47 +54,7 @@ use slog::{o, Drain};
 /// let config = parse()?;
 /// ```
 fn parse() -> Result<Config> {
-    // parse command line arguments
-    let matches = Command::new("pixivdaily")
-        .version(VERSION)
-        .author("K4YT3X <i@k4yt3x.com>")
-        .about("A Telegram bot that posts Pixiv's daily rankings for @pixiv_daily")
-        .arg(
-            Arg::new("chat-id")
-                .short('c')
-                .long("chat-id")
-                .value_name("CHATID")
-                .help("chat ID to send photos to")
-                .takes_value(true)
-                .env("TELOXIDE_CHAT_ID"),
-        )
-        .arg(
-            Arg::new("token")
-                .short('t')
-                .long("token")
-                .value_name("TOKEN")
-                .help("Telegram bot token")
-                .takes_value(true)
-                .env("TELOXIDE_TOKEN"),
-        )
-        .arg(
-            Arg::new("pages")
-                .short('p')
-                .long("pages")
-                .value_name("PAGES")
-                .help("number of ranking pages to fetch (18 illusts/page)")
-                .takes_value(true)
-                .default_value("3")
-                .env("PIXIV_RANKING_PAGES"),
-        )
-        .arg(
-            Arg::new("r18")
-                .short('r')
-                .long("r18")
-                .help("run in r18 mode")
-                .env("PIXIV_R18"),
-        )
-        .get_matches();
+    let args = Args::parse();
 
     // assign command line values to variables
     Ok(Config::new(
@@ -83,10 +63,10 @@ fn parse() -> Result<Config> {
             let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
             slog::Logger::root(drain, o!())
         },
-        matches.value_of_t_or_exit("token"),
-        matches.value_of_t_or_exit("chat-id"),
-        matches.value_of_t_or_exit("pages"),
-        matches.is_present("r18"),
+        args.token,
+        args.chat_id,
+        args.pages,
+        args.r18,
     ))
 }
 
