@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 use std::{
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek, SeekFrom},
     time::Duration,
 };
 
@@ -294,6 +294,7 @@ async fn resize_image(
         // encode raw bytes into PNG bytes
         let mut png_bytes_cursor = Cursor::new(vec![]);
         dynamic_image.write_to(&mut png_bytes_cursor, ImageFormat::Png)?;
+        png_bytes_cursor.seek(SeekFrom::Start(0))?;
 
         // read all bytes from cursor
         let mut png_bytes = Vec::new();
