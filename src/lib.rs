@@ -27,12 +27,12 @@ use reqwest::{header, Client};
 use serde::Deserialize;
 use slog::{debug, error, info, warn};
 use teloxide::{
+    adaptors::throttle::{Limits, Throttle},
     payloads::PinChatMessageSetters,
     prelude::*,
     types::{ChatId, InputFile, InputMedia, InputMediaPhoto, ParseMode},
     RequestError,
 };
-use teloxide_core::adaptors::throttle::{Limits, Throttle};
 use tokio::{task, task::JoinHandle};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");

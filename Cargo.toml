@@ -33,5 +33,4 @@ serde = { version = "1.0", features = ["derive"] }
 slog = "2.7"
 slog-term = "2.9"
 teloxide = { version = "0.11", features = ["macros", "throttle"] }
-teloxide-core = "0.8"
 tokio = { version = "1.23", features = ["full"] }
