@@ -533,7 +533,7 @@ pub async fn run(config: Config) -> Result<()> {
     let bot = Bot::with_client(&config.token, client).throttle(Limits::default());
 
     // fetch daily top 50
-    let today = Utc::today().format("%B %-d, %Y").to_string();
+    let today = Utc::now().format("%B %-d, %Y").to_string();
     info!(
         config.logger,
         "Fetching illustrations: date={} pages={} r18={}", today, config.pages, config.r18
