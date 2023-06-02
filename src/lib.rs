@@ -64,9 +64,9 @@ struct Illust {
     rating_count: String,
     rating_view: String,
     bookmark_user_total: u32,
+    url: String,
     url_s: String,
     url_ss: String,
-    url_big: String,
     meta: IllustMeta,
     author_details: Author,
 }
@@ -77,10 +77,12 @@ struct IllustImages {
     illust_image_height: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Manga {
     page: u32,
-    url_big: String,
+    url: String,
+    url_small: String,
 }
 
 #[allow(dead_code)]
@@ -413,7 +415,7 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
                 config.logger,
                 "Retrieving manga: id={} page={}", illust.id, image.page
             );
-            let original_image = download_image(&image.url_big, &illust.meta.canonical).await?;
+            let original_image = download_image(&image.url, &illust.meta.canonical).await?;
             let image_bytes = resize_image(
                 &config,
                 original_image,
@@ -448,7 +450,7 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
     // if this is not a manga
     else {
         info!(config.logger, "Retrieving image: id={}", illust.id);
-        let original_image = download_image(&illust.url_big, &illust.meta.canonical).await?;
+        let original_image = download_image(&illust.url, &illust.meta.canonical).await?;
         let image_bytes = resize_image(
             &config,
             original_image,
