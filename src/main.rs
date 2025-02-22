@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2022 K4YT3X.
+ * Copyright (C) 2021-2025 K4YT3X.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -14,12 +14,12 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::{process, sync::Mutex};
+use std::process;
 
 use anyhow::Result;
 use clap::Parser;
 use pixivdaily::{run, Config};
-use slog::{o, Drain};
+use tracing::Level;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -57,22 +57,14 @@ fn parse() -> Result<Config> {
     let args = Args::parse();
 
     // assign command line values to variables
-    Ok(Config::new(
-        {
-            let decorator = slog_term::TermDecorator::new().build();
-            let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
-            slog::Logger::root(drain, o!())
-        },
-        args.token,
-        args.chat_id,
-        args.pages,
-        args.r18,
-    ))
+    Ok(Config::new(args.token, args.chat_id, args.pages, args.r18))
 }
 
 /// program entry point
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+
     // parse command line arguments into Config
     match parse() {
         Err(e) => {

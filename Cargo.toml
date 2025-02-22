@@ -9,7 +9,7 @@ license = "GPL-2.0-only"
 name = "pixivdaily"
 readme = "README.md"
 repository = "https://github.com/k4yt3x/pixivdaily-rust"
-version = "1.4.5"
+version = "1.5.0"
 
 [[bin]]
 name = "pixivdaily"
@@ -24,13 +24,13 @@ strip = "symbols"
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
-clap = { version = "4.0", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 futures = "0.3"
-image = "0.24"
+image = "0.25"
 openssl = { version = "0.10", features = ["vendored"] }
-reqwest = { version = "0.11", features = ["blocking", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
-slog = "2.7"
-slog-term = "2.9"
-teloxide = { version = "0.11", features = ["macros", "throttle"] }
-tokio = { version = "1.23", features = ["full"] }
+teloxide = { version = "0.13", features = ["macros", "throttle"] }
+tokio = { version = "1.43", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

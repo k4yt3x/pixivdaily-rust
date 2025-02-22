@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2022 K4YT3X.
+ * Copyright (C) 2021-2025 K4YT3X.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -14,18 +14,14 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::{
-    io::{Cursor, Read, Seek, SeekFrom},
-    time::Duration,
-};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use futures::future;
 use image::{imageops::FilterType, ImageError, ImageFormat};
-use reqwest::{header, Client};
+use reqwest::header;
 use serde::Deserialize;
-use slog::{debug, error, info, warn};
 use teloxide::{
     adaptors::throttle::{Limits, Throttle},
     payloads::PinChatMessageSetters,
@@ -34,9 +30,11 @@ use teloxide::{
     RequestError,
 };
 use tokio::{task, task::JoinHandle};
+use tracing::{debug, error, info, warn};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
+const USER_AGENT: &'static str = "PixivAndroidApp/6.135.1 (Android 15; Pixel 9)";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -64,11 +62,12 @@ struct Illust {
     rating_count: String,
     rating_view: String,
     bookmark_user_total: u32,
-    url: String,
-    url_s: String,
-    url_ss: String,
+    url: Option<String>,
+    url_s: Option<String>,
+    url_ss: Option<String>,
     meta: IllustMeta,
     author_details: Author,
+    is_login_only: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,7 +120,6 @@ struct RankingIllust {
 /// configs passed to the run function
 #[derive(Clone)]
 pub struct Config {
-    logger: slog::Logger,
     token: String,
     chat_id: ChatId,
     pages: u32,
@@ -129,9 +127,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(logger: slog::Logger, token: String, chat_id: i64, pages: u32, r18: bool) -> Config {
+    pub fn new(token: String, chat_id: i64, pages: u32, r18: bool) -> Config {
         Config {
-            logger,
             token,
             chat_id: ChatId(chat_id),
             pages,
@@ -152,27 +149,30 @@ impl Config {
 /// let ranking = get_pixiv_daily_ranking(&config).await?;
 /// ```
 async fn get_pixiv_daily_ranking(config: &Config) -> Result<Vec<RankingIllust>, reqwest::Error> {
+    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
     let mut illusts = Vec::new();
 
     for page in 1..config.pages + 1 {
         illusts.push(
-            reqwest::get(format!(
-                "https://www.pixiv.net/touch/ajax/ranking/illust?mode={}&type=all&page={}",
-                {
-                    if config.r18 {
-                        "daily_r18"
-                    }
-                    else {
-                        "daily"
-                    }
-                },
-                page
-            ))
-            .await?
-            .json::<RankingResponse>()
-            .await?
-            .body
-            .ranking,
+            client
+                .get(format!(
+                    "https://www.pixiv.net/touch/ajax/ranking/illust?mode={}&type=all&page={}",
+                    {
+                        if config.r18 {
+                            "daily_r18"
+                        }
+                        else {
+                            "daily"
+                        }
+                    },
+                    page
+                ))
+                .send()
+                .await?
+                .json::<RankingResponse>()
+                .await?
+                .body
+                .ranking,
         )
     }
 
@@ -196,13 +196,16 @@ async fn get_pixiv_daily_ranking(config: &Config) -> Result<Vec<RankingIllust>, 
 /// let illust_details = get_illust_details("87469406").await?;
 /// ```
 async fn get_illust_details(id: String) -> Result<Illust, reqwest::Error> {
-    let illust_response = reqwest::get(format!(
-        "https://www.pixiv.net/touch/ajax/illust/details?illust_id={}",
-        id
-    ))
-    .await?
-    .json::<IllustResponse>()
-    .await?;
+    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    let illust_response = client
+        .get(format!(
+            "https://www.pixiv.net/touch/ajax/illust/details?illust_id={}",
+            id
+        ))
+        .send()
+        .await?
+        .json::<IllustResponse>()
+        .await?;
 
     Ok(illust_response.body.illust_details)
 }
@@ -225,7 +228,8 @@ async fn get_illust_details(id: String) -> Result<Illust, reqwest::Error> {
 /// &"https://example.com").await?
 /// ```
 async fn download_image(url: &String, referer: &String) -> Result<Vec<u8>, reqwest::Error> {
-    Ok(reqwest::Client::new()
+    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    Ok(client
         .get(url)
         .header(header::REFERER, referer)
         .send()
@@ -250,7 +254,6 @@ async fn download_image(url: &String, referer: &String) -> Result<Vec<u8>, reqwe
 ///
 /// image::ImageError
 async fn resize_image(
-    config: &Config,
     image_bytes: Vec<u8>,
     id: &String,
     original_width: u32,
@@ -260,7 +263,7 @@ async fn resize_image(
     if image_bytes.len() <= MAX_IMAGE_SIZE {
         return Ok(image_bytes);
     }
-    info!(config.logger, "Resizing oversized image: id={}", id);
+    info!(id = %id, "Resizing oversized image");
 
     // this is a very rough guess
     // could be improved in the future
@@ -268,8 +271,10 @@ async fn resize_image(
     let mut target_width = (original_width as f32 * guessed_ratio) as u32;
     let mut target_height = (original_height as f32 * guessed_ratio) as u32;
     debug!(
-        config.logger,
-        "Resizing parameters: r={} w={} h={}", guessed_ratio, target_width, target_height
+        r = guessed_ratio,
+        w = target_width,
+        h = target_height,
+        "Resizing parameters"
     );
 
     // Telegram API requires width + height <= 10000
@@ -278,11 +283,10 @@ async fn resize_image(
         target_width = (target_width as f32 * target_ratio).floor() as u32;
         target_height = (target_height as f32 * target_ratio).floor() as u32;
         debug!(
-            config.logger,
-            "Additional resizing parameters: r={} w={} h={}",
-            target_ratio,
-            target_width,
-            target_height
+            target_ratio = target_ratio,
+            target_width = target_width,
+            target_height = target_height,
+            "Additional resizing parameters"
         );
     }
 
@@ -305,18 +309,16 @@ async fn resize_image(
         // return the image if it is small enough
         if png_bytes.len() < MAX_IMAGE_SIZE {
             info!(
-                config.logger,
-                "Final size: size={}MiB",
-                png_bytes.len() as f32 / 1024_f32.powf(2.0)
+                size_mib = png_bytes.len() as f32 / 1024_f32.powf(2.0),
+                "Final size"
             );
             return Ok(png_bytes);
         }
 
         // shrink image by another 20% if the previous round is not enough
         debug!(
-            config.logger,
-            "Image too large: size={}MiB; additional resizing required",
-            png_bytes.len() as f32 / 1024_f32.powf(2.0)
+            size_mib = png_bytes.len() as f32 / 1024_f32.powf(2.0),
+            "Image too large; additional resizing required"
         );
         target_width = (target_width as f32 * 0.8) as u32;
         target_height = (target_height as f32 * 0.8) as u32;
@@ -412,12 +414,12 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
         // add each manga into images
         for image in manga {
             info!(
-                config.logger,
-                "Retrieving manga: id={} page={}", illust.id, image.page
+                id = %illust.id,
+                page = image.page,
+                "Retrieving manga"
             );
             let original_image = download_image(&image.url, &illust.meta.canonical).await?;
             let image_bytes = resize_image(
-                &config,
                 original_image,
                 &illust.id,
                 illust_images[image.page as usize]
@@ -439,6 +441,7 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
                     _ => None,
                 },
                 caption_entities: None,
+                has_spoiler: false,
             }));
 
             // one media group can contain a max of 10 images
@@ -449,10 +452,18 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
     }
     // if this is not a manga
     else {
-        info!(config.logger, "Retrieving image: id={}", illust.id);
-        let original_image = download_image(&illust.url, &illust.meta.canonical).await?;
+        info!(id = %illust.id, "Retrieving image");
+
+        // An URL might not be available for illustrations that are login-only
+        let url: String = match illust.url {
+            Some(url) => url,
+            None => {
+                return Err(anyhow!("Illustration URL is not available"));
+            }
+        };
+
+        let original_image = download_image(&url, &illust.meta.canonical).await?;
         let image_bytes = resize_image(
-            &config,
             original_image,
             &illust.id,
             illust.width.parse::<u32>()?,
@@ -464,6 +475,7 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
             caption: Some(captions.join("\n")),
             parse_mode: Some(ParseMode::MarkdownV2),
             caption_entities: None,
+            has_spoiler: false,
         }));
     }
 
@@ -475,8 +487,9 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
     for attempt in 0..10 {
         // send the photo with the caption
         info!(
-            config.logger,
-            "Sending artwork: id={} attempt={}", illust.id, attempt
+            id = %illust.id,
+            attempt = attempt,
+            "Sending artwork"
         );
         result = Some(
             bot.send_media_group(config.chat_id, images.clone())
@@ -487,15 +500,17 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
         // if an error has occurred, print the error's message
         if let Some(Err(error)) = &result {
             warn!(
-                config.logger,
-                "Temporary error sending artwork: id={} message={:?}", illust.id, error
+                id = %illust.id,
+                error = ?error,
+                "Temporary error sending artwork"
             );
         }
         // break out of the loop if the send operation has succeeded
         else {
             debug!(
-                config.logger,
-                "Successfully sent artwork: id={} attempt={}", illust.id, attempt
+                id = %illust.id,
+                attempt = attempt,
+                "Successfully sent artwork"
             );
             break;
         }
@@ -520,25 +535,18 @@ async fn send_illust<'a>(config: Config, bot: Throttle<Bot>, illust: Illust) -> 
 ///
 /// any error that implements the Error trait
 pub async fn run(config: Config) -> Result<()> {
-    info!(
-        config.logger,
-        "PixivDaily bot {version} initializing",
-        version = VERSION
-    );
+    info!(version = VERSION, "PixivDaily bot initializing");
 
-    // initialize bot instance with a custom client
-    // the default pool idle timeout is 90 seconds, which is too small for large
-    // images to be uploaded
-    let client = Client::builder()
-        .pool_idle_timeout(Duration::from_secs(6000))
-        .build()?;
-    let bot = Bot::with_client(&config.token, client).throttle(Limits::default());
+    // initialize bot instance
+    let bot = Bot::new(&config.token).throttle(Limits::default());
 
     // fetch daily top 50
     let today = Utc::now().format("%B %-d, %Y").to_string();
     info!(
-        config.logger,
-        "Fetching illustrations: date={} pages={} r18={}", today, config.pages, config.r18
+        date = today,
+        pages = config.pages,
+        r18 = config.r18,
+        "Fetching illustrations",
     );
 
     // push get illust detail tasks into a Vec
@@ -569,13 +577,10 @@ pub async fn run(config: Config) -> Result<()> {
     for result in future::join_all(send_illust_tasks).await {
         if let Err(error) = result? {
             if let Some(illust_id) = error.downcast_ref::<String>() {
-                error!(
-                    config.logger,
-                    "Failed sending artwork: id={} message={}", illust_id, error
-                );
+                error!(id = illust_id, error = ?error, "Failed sending artwork");
             }
             else {
-                error!(config.logger, "Failed sending artwork: message={}", error);
+                error!(error = ?error, "Failed sending artwork: message=");
             }
         }
     }
